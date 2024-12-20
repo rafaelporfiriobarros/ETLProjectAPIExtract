@@ -6,20 +6,31 @@ from dotenv import load_dotenv
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
+# Integração com Logfire
+import logging
+import logfire
+from logging import basicConfig, getLogger
+# Configura o Logfire e adiciona o handler
+logfire.configure()
+basicConfig(handlers=[logfire.LogfireLoggingHandler()])
+logger = getLogger(__name__)
+logger.setLevel(logging.INFO)
+
 # Importar Base e BitcoinPreco do database.py
 from database import Base, BitcoinPreco
 
 # Carrega variáveis de ambiente do arquivo .env
 load_dotenv()
 
-# Lê as variáveis separadas do arquivo .env (sem SSL)
+
+# Lê as variáveis separadas do arquivo .env
 POSTGRES_USER = os.getenv("POSTGRES_USER")
 POSTGRES_PASSWORD = os.getenv("POSTGRES_PASSWORD")
 POSTGRES_HOST = os.getenv("POSTGRES_HOST")
 POSTGRES_PORT = os.getenv("POSTGRES_PORT")
 POSTGRES_DB = os.getenv("POSTGRES_DB")
 
-# Monta a URL de conexão ao banco PostgreSQL (sem ?sslmode=...)
+# Monta a URL de conexão ao banco PostgreSQL (sem SSL)
 DATABASE_URL = (
     f"postgresql://{POSTGRES_USER}:{POSTGRES_PASSWORD}"
     f"@{POSTGRES_HOST}:{POSTGRES_PORT}/{POSTGRES_DB}"
@@ -32,7 +43,7 @@ Session = sessionmaker(bind=engine)
 def criar_tabela():
     """Cria a tabela no banco de dados, se não existir."""
     Base.metadata.create_all(engine)
-    print("Tabela criada/verificada com sucesso!")
+    logger.info("Tabela criada/verificada com sucesso!")
 
 def extrair_dados_bitcoin():
     """Extrai o JSON completo da API da Coinbase."""
@@ -41,7 +52,7 @@ def extrair_dados_bitcoin():
     if resposta.status_code == 200:
         return resposta.json()
     else:
-        print(f"Erro na API: {resposta.status_code}")
+        logger.error(f"Erro na API: {resposta.status_code}")
         return None
 
 def tratar_dados_bitcoin(dados_json):
@@ -62,27 +73,32 @@ def tratar_dados_bitcoin(dados_json):
 def salvar_dados_postgres(dados):
     """Salva os dados no banco PostgreSQL."""
     session = Session()
-    novo_registro = BitcoinPreco(**dados)
-    session.add(novo_registro)
-    session.commit()
-    session.close()
-    print(f"[{dados['timestamp']}] Dados salvos no PostgreSQL!")
+    try:
+        novo_registro = BitcoinPreco(**dados)
+        session.add(novo_registro)
+        session.commit()
+        logger.info(f"[{dados['timestamp']}] Dados salvos no PostgreSQL!")
+    except Exception as ex:
+        logger.error(f"Erro ao inserir dados no PostgreSQL: {ex}")
+        session.rollback()
+    finally:
+        session.close()
 
 if __name__ == "__main__":
     criar_tabela()
-    print("Iniciando ETL com atualização a cada 15 segundos... (CTRL+C para interromper)")
+    logger.info("Iniciando ETL com atualização a cada 15 segundos... (CTRL+C para interromper)")
 
     while True:
         try:
             dados_json = extrair_dados_bitcoin()
             if dados_json:
                 dados_tratados = tratar_dados_bitcoin(dados_json)
-                print("Dados Tratados:", dados_tratados)
+                logger.info(f"Dados Tratados: {dados_tratados}")
                 salvar_dados_postgres(dados_tratados)
             time.sleep(15)
         except KeyboardInterrupt:
-            print("\nProcesso interrompido pelo usuário. Finalizando...")
+            logger.info("Processo interrompido pelo usuário. Finalizando...")
             break
         except Exception as e:
-            print(f"Erro durante a execução: {e}")
+            logger.error(f"Erro durante a execução: {e}")
             time.sleep(15)
